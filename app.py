@@ -84,7 +84,14 @@ image_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Initialize other services
 translator = Translator()
-speech_engine = pyttsx3.init()
+
+# Initialize text-to-speech engine with fallback
+try:
+    speech_engine = pyttsx3.init()
+    print("Successfully initialized text-to-speech engine")
+except Exception as e:
+    print(f"Warning: Failed to initialize text-to-speech engine: {str(e)}")
+    speech_engine = None
 
 UPLOAD_FOLDER = 'static/uploads/animals'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
@@ -113,10 +120,10 @@ if not os.path.exists(UPLOAD_FOLDER_PREDICTION):
 try:
     # Load the symptom encoder
     encoder_symptoms = joblib.load('encoder_symptoms.pkl')
-    
+
     # Load the disease encoder
     encoder_disease = joblib.load('encoder_disease.pkl')
-    
+
     # Load the prediction model
     disease_model = joblib.load('disease_prediction_model.pkl')
 except Exception as e:
@@ -172,27 +179,27 @@ gemini_model = genai.GenerativeModel(model_name="gemini-1.5-flash",
 def login():
     if request.method == 'GET':
         return render_template('login.html')
-    
+
     try:
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'error': 'No data provided'}), 400
-        
+
         username = data.get('username')
         password = data.get('password')
-        
+
         if not username or not password:
             return jsonify({'success': False, 'error': 'Username and password are required'}), 400
 
         user = users.find_one({'username': username})
-        
+
         if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
             session['user_id'] = str(user['_id'])
             session['username'] = user['username']
             return jsonify({'success': True})
-        
+
         return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
-    
+
     except Exception as e:
         print(f"Login error: {str(e)}")  # Server-side logging
         return jsonify({'success': False, 'error': 'Server error occurred'}), 500
@@ -201,19 +208,19 @@ def login():
 def register():
     if request.method == 'GET':
         return render_template('register.html')
-    
+
     try:
         print("Received registration request")
         data = request.get_json()
         print(f"Request data: {data}")
-        
+
         if not data:
             print("No data provided")
             return jsonify({'success': False, 'error': 'No data provided'}), 400
 
         required_fields = ['username', 'password', 'fullName', 'email', 'state', 'district']
         missing_fields = [field for field in required_fields if not data.get(field)]
-        
+
         if missing_fields:
             print(f"Missing fields: {missing_fields}")
             return jsonify({'success': False, 'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
@@ -222,15 +229,15 @@ def register():
         if users.find_one({'username': data['username']}):
             print(f"Username {data['username']} already exists")
             return jsonify({'success': False, 'error': 'Username already exists'}), 409
-            
+
         if users.find_one({'email': data['email']}):
             print(f"Email {data['email']} already exists")
             return jsonify({'success': False, 'error': 'Email already exists'}), 409
-        
+
         try:
             # Hash password and convert to string for MongoDB storage
             hashed_password = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
-            
+
             # Prepare user data with proper data types for MongoDB
             user_data = {
                 'username': str(data['username']),
@@ -250,7 +257,7 @@ def register():
                 'created_at': datetime.utcnow()
             }
             print(f"Prepared user data (excluding password): {dict(user_data, password='[HIDDEN]')}")
-            
+
             result = users.insert_one(user_data)
             if result.inserted_id:
                 print(f"User successfully inserted with ID: {result.inserted_id}")
@@ -258,11 +265,11 @@ def register():
             else:
                 print("Failed to insert user - no ID returned")
                 return jsonify({'success': False, 'error': 'Failed to create user'}), 500
-            
+
         except Exception as inner_e:
             print(f"Error in database operation: {str(inner_e)}")
             return jsonify({'success': False, 'error': f'Database operation failed: {str(inner_e)}'}), 500
-            
+
     except Exception as e:
         print(f"Registration error: {str(e)}")
         return jsonify({'success': False, 'error': f'Server error occurred: {str(e)}'}), 500
@@ -310,15 +317,15 @@ def upload_image():
     try:
         if 'image' not in request.files:
             return jsonify({"error": "No image file provided"}), 400
-            
+
         file = request.files['image']
         if file.filename == '':
             return jsonify({"error": "No selected file"}), 400
-            
+
         # Read and process the image
         img_bytes = file.read()
         img = Image.open(io.BytesIO(img_bytes))
-        
+
         # Convert image to JPEG format
         if img.mode in ('RGBA', 'LA'):
             background = Image.new('RGB', img.size, (255, 255, 255))
@@ -326,22 +333,22 @@ def upload_image():
             img = background
         elif img.mode != 'RGB':
             img = img.convert('RGB')
-            
+
         # Save to bytes for base64
         img_byte_arr = io.BytesIO()
         img.save(img_byte_arr, format='JPEG')
         img_byte_arr = img_byte_arr.getvalue()
         img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
-        
+
         # Analyze image with Gemini Vision
         prompt = "Analyze this veterinary image and describe any visible symptoms or conditions you can see. If you can identify the animal type, breed, or any health indicators, please mention them."
-        
+
         try:
             response = image_model.generate_content([prompt, {"mime_type": "image/jpeg", "data": img_base64}])
             analysis_text = response.text if response and response.text else "No analysis available"
         except Exception as e:
             analysis_text = f"Image analysis failed: {str(e)}"
-        
+
         # Store image in database
         image_data = {
             'image': img_base64,
@@ -349,13 +356,13 @@ def upload_image():
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         images.insert_one(image_data)
-        
+
         return jsonify({
             "success": True,
             "image": f"data:image/jpeg;base64,{img_base64}",
             "analysis": analysis_text
         })
-        
+
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -364,11 +371,16 @@ def voice_input():
     try:
         audio_data = request.files['audio']
         recognizer = sr.Recognizer()
-        
+
         with sr.AudioFile(audio_data) as source:
             audio = recognizer.record(source)
             text = recognizer.recognize_google(audio)
-            
+
+        # Only attempt text-to-speech if engine is available
+        if speech_engine is not None:
+            speech_engine.say(text)
+            speech_engine.runAndWait()
+        
         return jsonify({"text": text})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -378,7 +390,7 @@ def translate_text():
     try:
         text = request.json['text']
         target_lang = request.json['target_lang']
-        
+
         translated = translator.translate(text, dest=target_lang)
         return jsonify({"translated": translated.text})
     except Exception as e:
@@ -389,10 +401,10 @@ async def get_weather():
     try:
         client = python_weather.Client()
         city = request.args.get('city', 'Mumbai')
-        
+
         weather = await client.get(city)
         await client.close()
-        
+
         return jsonify({
             "temperature": weather.current.temperature,
             "description": weather.current.description
@@ -432,11 +444,11 @@ def get_analytics():
         livestock_details = user.get('livestock_details', {})
         for animal_type in ['cow', 'buffalo', 'goat', 'sheep']:
             # Filter out deleted animals
-            animals = [animal for animal in livestock_details.get(animal_type, []) 
+            animals = [animal for animal in livestock_details.get(animal_type, [])
                       if not animal.get('is_deleted', False)]
-            
+
             analytics['livestock_count'][animal_type] = len(animals)
-            
+
             for animal in animals:
                 # Health status
                 health_status = animal.get('health_status', 'healthy').lower()
@@ -477,9 +489,9 @@ def get_analytics():
                 'condition': 1,
                 'timestamp': 1
             }).sort('timestamp', -1).limit(5))
-            
+
             print(f"Found {len(recent_records)} health records")  # Debug print
-            
+
             # Format the records
             formatted_records = []
             for record in recent_records:
@@ -499,7 +511,7 @@ def get_analytics():
 
             analytics['recent_health_records'] = formatted_records
             print("Formatted health records:", formatted_records)  # Debug print
-            
+
         except Exception as e:
             print(f"Error getting health records: {str(e)}")
             analytics['recent_health_records'] = []
@@ -508,18 +520,18 @@ def get_analytics():
         try:
             current_date = datetime.now()
             thirty_days_later = current_date + timedelta(days=30)
-            
+
             # Debug print current date range
             print(f"Checking vaccinations between {current_date.strftime('%Y-%m-%d')} and {thirty_days_later.strftime('%Y-%m-%d')}")
-            
+
             # Get all appointments
             upcoming_appointments = list(appointments.find({
                 'status': 'scheduled'
             }))
-            
+
             # Debug print all appointments
             print("All appointments:", upcoming_appointments)
-            
+
             # Count appointments in the next 30 days
             vaccination_count = 0
             for appt in upcoming_appointments:
@@ -533,10 +545,10 @@ def get_analytics():
                     print(f"Error processing appointment: {str(e)}")
                     print("Appointment data:", appt)
                     continue
-            
+
             analytics['vaccination_due'] = vaccination_count
             print(f"Found {vaccination_count} upcoming vaccinations")  # Debug print
-            
+
         except Exception as e:
             print(f"Error getting vaccination count: {str(e)}")
             analytics['vaccination_due'] = 0
@@ -566,7 +578,7 @@ def chat():
 
         # First, check if this is an animal-related query
         words = user_query.lower().split()
-        
+
         # Check each word for potential animal ID
         for word in words:
             # Search through all animal types
@@ -592,7 +604,7 @@ def chat():
                             'animal_type': animal_type,
                             'animal_id': animal['id']
                         }))
-                        
+
                         if vaccinations:
                             animal_info += "\n\nVaccination History:"
                             for vac in vaccinations:
@@ -647,7 +659,7 @@ Response:"""
             # Get response from Gemini
             model = genai.GenerativeModel('gemini-pro')
             response = model.generate_content(prompt)
-            
+
             if response.text:
                 return jsonify({'response': response.text})
             else:
@@ -687,7 +699,7 @@ def get_vaccination_data():
     try:
         user_id = str(session['user_id'])
         print(f"Getting vaccination data for user: {user_id}")  # Debug print
-        
+
         # Get all vaccination records
         vaccination_records = list(vaccinations.find(
             {'user_id': user_id},
@@ -700,7 +712,7 @@ def get_vaccination_data():
                 'nextDueDate': 1
             }
         ))
-        
+
         # Get all scheduled appointments
         scheduled_appointments = list(appointments.find(
             {
@@ -715,10 +727,10 @@ def get_vaccination_data():
                 'appointmentDate': 1
             }
         ))
-        
+
         print(f"Found {len(vaccination_records)} vaccination records")  # Debug print
         print(f"Found {len(scheduled_appointments)} scheduled appointments")  # Debug print
-        
+
         # Format appointments for response
         formatted_appointments = []
         for appt in scheduled_appointments:
@@ -736,7 +748,7 @@ def get_vaccination_data():
                 print(f"Error formatting appointment: {str(e)}")
                 print(f"Appointment data: {appt}")
                 continue
-        
+
         # Format vaccination records for response
         formatted_records = []
         for record in vaccination_records:
@@ -754,13 +766,13 @@ def get_vaccination_data():
                 print(f"Error formatting vaccination record: {str(e)}")
                 print(f"Record data: {record}")
                 continue
-        
+
         return jsonify({
             'success': True,
             'vaccinations': formatted_records,
             'appointments': formatted_appointments
         })
-        
+
     except Exception as e:
         print(f"Error in get_vaccination_data: {str(e)}")
         return jsonify({
@@ -778,11 +790,11 @@ def book_vaccination():
 
     try:
         data = request.get_json()
-        
+
         # Validate required fields
         required_fields = ['animalId', 'animalType', 'breed', 'age', 'vaccinationType', 'appointmentDate']
         missing_fields = [field for field in required_fields if field not in data or not data[field]]
-        
+
         if missing_fields:
             return jsonify({
                 'success': False,
@@ -816,7 +828,7 @@ def book_vaccination():
                 'success': False,
                 'error': 'Invalid date format'
             }), 400
-        
+
         # Create appointment record with consistent field names
         appointment = {
             'animal_id': str(data['animalId']),  # Changed from animalId to animal_id
@@ -829,7 +841,7 @@ def book_vaccination():
             'createdAt': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'user_id': str(session['user_id'])  # Add user_id field
         }
-        
+
         # Check for duplicate appointments
         existing_appointment = appointments.find_one({
             'animal_id': appointment['animal_id'],
@@ -837,16 +849,16 @@ def book_vaccination():
             'appointmentDate': appointment['appointmentDate'],
             'status': 'scheduled'
         })
-        
+
         if existing_appointment:
             return jsonify({
                 'success': False,
                 'error': 'An appointment already exists for this animal on the selected date'
             }), 400
-        
+
         # Save to database
         result = appointments.insert_one(appointment)
-        
+
         if result.inserted_id:
             return jsonify({
                 'success': True,
@@ -858,7 +870,7 @@ def book_vaccination():
                 'success': False,
                 'error': 'Failed to save appointment'
             }), 500
-            
+
     except Exception as e:
         app.logger.error(f"Error in book_vaccination: {str(e)}")
         return jsonify({
@@ -874,13 +886,13 @@ def complete_vaccination():
         appointment_id = data.get('appointmentId')
         vaccination_date = data.get('vaccinationDate')
         next_due_date = data.get('nextDueDate')
-        
+
         if not all([appointment_id, vaccination_date, next_due_date]):
             return jsonify({
                 'success': False,
                 'error': 'Missing required fields'
             }), 400
-            
+
         # Get the appointment
         appointment = appointments.find_one({'_id': ObjectId(appointment_id)})
         if not appointment:
@@ -888,7 +900,7 @@ def complete_vaccination():
                 'success': False,
                 'error': 'Appointment not found'
             }), 404
-            
+
         # Create vaccination record
         vaccination_record = {
             'user_id': str(session['user_id']),
@@ -899,21 +911,21 @@ def complete_vaccination():
             'nextDueDate': next_due_date,
             'createdAt': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        
+
         # Save vaccination record
         vaccinations.insert_one(vaccination_record)
-        
+
         # Update appointment status
         appointments.update_one(
             {'_id': ObjectId(appointment_id)},
             {'$set': {'status': 'completed'}}
         )
-        
+
         return jsonify({
             'success': True,
             'message': 'Vaccination completed successfully'
         })
-        
+
     except Exception as e:
         print(f"Error completing vaccination: {str(e)}")
         return jsonify({
@@ -927,7 +939,7 @@ def profile():
     user = users.find_one({'_id': ObjectId(session['user_id'])})
     if not user:
         return redirect('/logout')
-    
+
     # Remove password from user data
     user.pop('password', None)
     return render_template('profile.html', user=user)
@@ -938,11 +950,11 @@ def update_profile():
     try:
         data = request.get_json()
         user_id = ObjectId(session['user_id'])
-        
+
         # Calculate total livestock
         livestock = data.get('livestock', {})
         livestock['total'] = sum(livestock.values())
-        
+
         # Update user data
         update_data = {
             'full_name': data['full_name'],
@@ -951,12 +963,12 @@ def update_profile():
             'farm_size': float(data['farm_size']),
             'livestock': livestock
         }
-        
+
         users.update_one(
             {'_id': user_id},
             {'$set': update_data}
         )
-        
+
         return jsonify({'success': True})
     except Exception as e:
         print(f"Profile update error: {str(e)}")
@@ -968,7 +980,7 @@ def livestock_management():
     user = users.find_one({'_id': ObjectId(session['user_id'])})
     if not user:
         return redirect('/logout')
-    
+
     # Initialize livestock details if not present
     if 'livestock_details' not in user:
         user['livestock_details'] = {
@@ -977,7 +989,7 @@ def livestock_management():
             'goat': [],
             'sheep': []
         }
-    
+
     user.pop('password', None)
     return render_template('livestock_management.html', user=user)
 
@@ -995,16 +1007,16 @@ def save_animal():
     try:
         user_id = ObjectId(session['user_id'])
         user = users.find_one({'_id': user_id})
-        
+
         animal_type = request.form['type']
         plural_type = get_plural_form(animal_type)
-        
+
         # Initialize livestock_details if not present
         if 'livestock_details' not in user:
             user['livestock_details'] = {
                 'cow': [], 'buffalo': [], 'goat': [], 'sheep': []
             }
-        
+
         # Create animal data dictionary
         animal_data = {
             'breed': request.form['breed'],
@@ -1015,35 +1027,35 @@ def save_animal():
             'health_status': request.form['health_status'],
             'notes': request.form.get('notes', '')
         }
-        
+
         # Handle image upload
         if 'image' in request.files:
             file = request.files['image']
             if file and file.filename and allowed_file(file.filename):
                 # Create upload directory if it doesn't exist
                 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-                
+
                 # Generate unique filename
                 filename = secure_filename(file.filename)
                 ext = filename.rsplit('.', 1)[1].lower()
                 new_filename = f"{animal_type}_{request.form['id']}.{ext}"
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], new_filename)
-                
+
                 # Save the file
                 file.save(file_path)
                 animal_data['image_url'] = f"/static/uploads/animals/{new_filename}"
-        
+
         # Check if we're editing or adding
         if request.form.get('editId'):
             # Editing existing animal
             animal_list = user['livestock_details'][animal_type]
             animal_index = next((index for (index, d) in enumerate(animal_list) if d["id"] == request.form['editId']), None)
-            
+
             if animal_index is not None:
                 # Keep existing image if not changed
                 if 'image_url' not in animal_data and 'image_url' in animal_list[animal_index]:
                     animal_data['image_url'] = animal_list[animal_index]['image_url']
-                
+
                 # Handle image removal
                 if request.form.get('removeImage') == 'true':
                     if 'image_url' in animal_list[animal_index]:
@@ -1052,7 +1064,7 @@ def save_animal():
                         except:
                             pass
                     animal_data.pop('image_url', None)
-                
+
                 animal_data['id'] = request.form['editId']
                 animal_list[animal_index] = animal_data
             else:
@@ -1061,16 +1073,16 @@ def save_animal():
             # Adding new animal
             current_count = len(user['livestock_details'][animal_type])
             max_count = user['livestock'][plural_type]
-            
+
             if current_count >= max_count:
                 return jsonify({
-                    'success': False, 
+                    'success': False,
                     'error': f'Cannot add more {plural_type}. Maximum limit ({max_count}) reached.'
                 })
-            
+
             # Add ID to animal data
             animal_data['id'] = request.form['id']
-            
+
             # Verify ID is unique
             existing_ids = [animal['id'] for animal in user['livestock_details'][animal_type]]
             if animal_data['id'] in existing_ids:
@@ -1078,17 +1090,17 @@ def save_animal():
                     'success': False,
                     'error': f'Animal ID {animal_data["id"]} already exists'
                 })
-            
+
             user['livestock_details'][animal_type].append(animal_data)
-        
+
         # Update user document
         users.update_one(
             {'_id': user_id},
             {'$set': {'livestock_details': user['livestock_details']}}
         )
-        
+
         return jsonify({'success': True})
-        
+
     except Exception as e:
         print(f"Error saving animal: {str(e)}")
         return jsonify({'success': False, 'error': 'Failed to save animal'})
@@ -1100,14 +1112,14 @@ def get_animal(animal_type, animal_id):
         user = users.find_one({'_id': ObjectId(session['user_id'])})
         if not user or 'livestock_details' not in user:
             return jsonify({'success': False, 'error': 'No livestock details found'})
-            
+
         animal_list = user['livestock_details'].get(animal_type, [])
         animal = next((a for a in animal_list if str(a['id']) == str(animal_id)), None)
-        
+
         if animal:
             return jsonify({'success': True, 'animal': animal})
         return jsonify({'success': False, 'error': 'Animal not found'})
-        
+
     except Exception as e:
         print(f"Error getting animal: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
@@ -1120,35 +1132,35 @@ def delete_animal():
         user_id = ObjectId(session['user_id'])
         animal_type = data['type']
         animal_id = data['id']
-        
+
         # Get user and verify animal exists
         user = users.find_one({'_id': user_id})
         if not user or 'livestock_details' not in user:
             return jsonify({'success': False, 'error': 'No livestock details found'})
-            
+
         animal_list = user['livestock_details'].get(animal_type, [])
         animal = next((a for a in animal_list if str(a['id']) == str(animal_id)), None)
-        
+
         if not animal:
             return jsonify({'success': False, 'error': 'Animal not found'})
-            
+
         # Remove animal's image if it exists
         if 'image_url' in animal:
             try:
                 os.remove(os.path.join('static', animal['image_url'].lstrip('/')))
             except Exception as e:
                 print(f"Error removing image: {str(e)}")
-        
+
         # Remove animal from list
         result = users.update_one(
             {'_id': user_id},
             {'$pull': {f'livestock_details.{animal_type}': {'id': animal_id}}}
         )
-        
+
         if result.modified_count > 0:
             return jsonify({'success': True})
         return jsonify({'success': False, 'error': 'Failed to delete animal'})
-        
+
     except Exception as e:
         print(f"Error deleting animal: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
@@ -1162,11 +1174,11 @@ def get_animals(animal_type):
         if not user or 'livestock_details' not in user:
             print("No livestock details found for user")
             return jsonify([])
-        
+
         # Get animals of specified type
         animals = user.get('livestock_details', {}).get(animal_type, [])
         print(f"Found {len(animals)} animals of type {animal_type}")
-        
+
         # Format animals for response
         formatted_animals = []
         for animal in animals:
@@ -1181,10 +1193,10 @@ def get_animals(animal_type):
             except Exception as e:
                 print(f"Error formatting animal: {str(e)}")
                 continue
-        
+
         print(f"Returning {len(formatted_animals)} formatted animals")
         return jsonify(formatted_animals)
-    
+
     except Exception as e:
         print(f"Error in get_animals: {str(e)}")
         return jsonify([])
@@ -1194,21 +1206,21 @@ def get_animals(animal_type):
 def add_health_record():
     try:
         data = request.get_json()
-        
+
         # Debug print
         print("Received data:", data)
         print("User ID:", session['user_id'])
-        
+
         # Validate required fields
         required_fields = ['animal_id', 'animal_type', 'symptoms', 'diagnosis', 'treatment', 'condition', 'location']
         missing_fields = [field for field in required_fields if not data.get(field)]
-        
+
         if missing_fields:
             return jsonify({
                 'success': False,
                 'error': f"Missing required fields: {', '.join(missing_fields)}"
             })
-        
+
         # Find the user and their livestock
         user = users.find_one({'_id': ObjectId(session['user_id'])})
         if not user or 'livestock_details' not in user:
@@ -1216,10 +1228,10 @@ def add_health_record():
                 'success': False,
                 'error': "No livestock details found for user"
             })
-            
+
         # Debug print
         print("User livestock details:", user.get('livestock_details'))
-        
+
         # Check if animal type exists
         animal_type = data['animal_type'].lower()
         if animal_type not in user['livestock_details']:
@@ -1227,20 +1239,20 @@ def add_health_record():
                 'success': False,
                 'error': f"No {animal_type} found in your livestock"
             })
-            
+
         # Find the specific animal
         animal_found = False
         for animal in user['livestock_details'][animal_type]:
             if str(animal['id']) == str(data['animal_id']):
                 animal_found = True
                 break
-                
+
         if not animal_found:
             return jsonify({
                 'success': False,
                 'error': f"Animal ID {data['animal_id']} not found in your {animal_type} livestock"
             })
-        
+
         # Create health record
         record = {
             'user_id': str(session['user_id']),
@@ -1254,10 +1266,10 @@ def add_health_record():
             'notes': data['notes'].strip() if data.get('notes') else '',
             'timestamp': datetime.now()
         }
-        
+
         # Insert into database
         health_records.insert_one(record)
-        
+
         # Update the animal's health history
         result = users.update_one(
             {
@@ -1282,16 +1294,16 @@ def add_health_record():
                 }
             }
         )
-        
+
         if result.modified_count == 0:
             print("Failed to update animal health history. Result:", result.raw_result)
             return jsonify({
                 'success': False,
                 'error': "Failed to update animal health history"
             })
-        
+
         return jsonify({'success': True})
-        
+
     except Exception as e:
         print(f"Error adding health record: {str(e)}")
         return jsonify({
@@ -1312,11 +1324,11 @@ def get_health_history(animal_type, animal_id):
             },
             {'_id': 0}
         ).sort('timestamp', -1))  # Sort by newest first
-        
+
         # Format timestamps
         for record in records:
             record['timestamp'] = record['timestamp'].isoformat()
-        
+
         return jsonify(records)
     except Exception as e:
         print(f"Error getting health history: {str(e)}")
@@ -1387,7 +1399,7 @@ def download_animal_record(animal_type, animal_id):
                 # Record date
                 date_str = record['timestamp'].strftime('%Y-%m-%d %H:%M')
                 elements.append(Paragraph(f"Date: {date_str}", styles['Heading3']))
-                
+
                 # Record details
                 record_data = [
                     ["Symptoms:", record['symptoms']],
@@ -1398,7 +1410,7 @@ def download_animal_record(animal_type, animal_id):
                 ]
                 if record.get('notes'):
                     record_data.append(["Notes:", record['notes']])
-                
+
                 t = Table(record_data, colWidths=[100, 300])
                 t.setStyle(TableStyle([
                     ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
@@ -1415,7 +1427,7 @@ def download_animal_record(animal_type, animal_id):
         # Build PDF
         doc.build(elements)
         buffer.seek(0)
-        
+
         return send_file(
             buffer,
             download_name=f'animal_record_{animal_type}_{animal_id}.pdf',
@@ -1567,7 +1579,7 @@ def predict_disease():
     try:
         # Get selected symptoms
         selected_symptoms = request.form.getlist('symptoms')
-        
+
         if not selected_symptoms:
             return jsonify({
                 'success': False,
@@ -1579,7 +1591,7 @@ def predict_disease():
             selected_symptoms.append(None)
         # Take only the first 3 symptoms if more are selected
         selected_symptoms = selected_symptoms[:3]
-        
+
         try:
             # Encode each symptom (handle None values)
             encoded_symptoms = []
@@ -1589,11 +1601,11 @@ def predict_disease():
                     encoded_symptoms.append(0)
                 else:
                     encoded_symptoms.append(encoder_symptoms.transform([symptom])[0])
-            
+
             # Make prediction using the disease prediction model
             prediction = disease_model.predict([encoded_symptoms])[0]
             predicted_disease = encoder_disease.inverse_transform([prediction])[0]
-            
+
             # Get disease information
             disease_details = disease_info.get(predicted_disease, {
                 "description": "Detailed information not available for this condition.",
@@ -1612,11 +1624,11 @@ def predict_disease():
                 "predicted_disease": predicted_disease,
                 "details": disease_details
             }
-            
+
             # Add photo information if available
             if 'last_uploaded_photo' in request.form:
                 prediction_data['photo'] = request.form['last_uploaded_photo']
-                
+
             predictions_collection.insert_one(prediction_data)
 
             return jsonify({
@@ -1642,18 +1654,18 @@ def predict_disease():
 def upload_photo():
     if 'photo' not in request.files:
         return jsonify({'error': 'No photo uploaded'}), 400
-    
+
     photo = request.files['photo']
     if photo.filename == '':
         return jsonify({'error': 'No photo selected'}), 400
-    
+
     if photo and allowed_file(photo.filename):
         try:
             # Save the photo
             filename = datetime.now().strftime("%Y%m%d_%H%M%S_") + photo.filename
             filepath = os.path.join(UPLOAD_FOLDER_PREDICTION, filename)
             photo.save(filepath)
-            
+
             # Read the image for analysis
             with open(filepath, 'rb') as image_file:
                 image_data = image_file.read()
@@ -1682,13 +1694,13 @@ Format the response as JSON with the following structure:
                 contents=[prompt, image],
                 stream=False
             )
-            
+
             try:
                 # Extract JSON from response
                 analysis_text = response.text
                 json_start = analysis_text.find('{')
                 json_end = analysis_text.rfind('}') + 1
-                
+
                 if json_start >= 0 and json_end > json_start:
                     analysis_json = json.loads(analysis_text[json_start:json_end])
                 else:
@@ -1705,10 +1717,10 @@ Format the response as JSON with the following structure:
                 matched_symptoms = []
                 for ai_symptom in analysis_json.get('visible_symptoms', []):
                     for known_symptom in symptom_list:
-                        if (ai_symptom.lower() in known_symptom.lower() or 
+                        if (ai_symptom.lower() in known_symptom.lower() or
                             known_symptom.lower() in ai_symptom.lower()):
                             matched_symptoms.append(known_symptom)
-                
+
                 analysis_json['matched_symptoms'] = list(set(matched_symptoms))
 
                 return jsonify({
@@ -1748,7 +1760,7 @@ def analyze_image():
             return jsonify({'error': 'No image path provided'}), 400
 
         image_path = request.json['image_path']
-        
+
         # Read the image file
         with open(os.path.join(UPLOAD_FOLDER_PREDICTION, image_path), 'rb') as image_file:
             content = image_file.read()
@@ -1810,23 +1822,23 @@ def records_page():
 def get_all_records():
     try:
         user_id = str(session['user_id'])
-        
+
         print(f"Looking for records for user: {user_id}")  # Debug print
-        
+
         # Get user's livestock details to check for deleted animals
         user = users.find_one({'_id': ObjectId(session['user_id'])})
         livestock_details = user.get('livestock_details', {})
-        
+
         # Create a set of active animal IDs
         active_animal_ids = set()
         for animal_type in livestock_details:
             for animal in livestock_details[animal_type]:
                 if not animal.get('is_deleted', False):
                     active_animal_ids.add(str(animal['id']))
-        
+
         print(f"Found {len(active_animal_ids)} active animals")  # Debug print
         print("Active animal IDs:", active_animal_ids)  # Debug print
-        
+
         # Get health records for active animals only
         health_records_list = list(health_records.find(
             {
@@ -1902,14 +1914,14 @@ def get_all_records():
         # Get upcoming vaccination appointments for active animals only
         current_date = datetime.now().strftime('%Y-%m-%d')
         print(f"Current date: {current_date}")  # Debug print
-        
+
         # Get upcoming appointments with proper field names
         upcoming_appointments = list(appointments.find({
             'user_id': user_id,
             'status': 'scheduled',
             'appointmentDate': {'$gte': current_date}
         }).sort('appointmentDate', 1))
-        
+
         print(f"\nFound {len(upcoming_appointments)} scheduled appointments")
         for appt in upcoming_appointments:
             print(f"Scheduled appointment: {appt}")
@@ -1925,15 +1937,15 @@ def get_all_records():
                 # Debug prints for each appointment
                 print(f"\nProcessing appointment:")
                 print(f"Raw appointment data: {appt}")
-                
+
                 # Get and validate appointment date
                 appt_date_str = appt.get('appointmentDate')
                 print(f"Appointment date string: {appt_date_str}")
-                
+
                 if not appt_date_str:
                     print("Skipping appointment - no date")
                     continue
-                
+
                 # Parse the appointment date
                 try:
                     appt_date = datetime.strptime(appt_date_str, '%Y-%m-%d')
@@ -1942,12 +1954,12 @@ def get_all_records():
                 except ValueError as e:
                     print(f"Error parsing date {appt_date_str}: {e}")
                     continue
-                
+
                 # Get animal details
                 animal_id = str(appt.get('animal_id', ''))  # Updated field name
                 animal_type = appt.get('animal_type', '').lower()  # Updated field name
                 print(f"Animal ID: {animal_id}, Type: {animal_type}")
-                
+
                 # Check if this is a future appointment
                 if appt_date.date() >= datetime.now().date():
                     formatted_record = {
@@ -1962,7 +1974,7 @@ def get_all_records():
                     print(f"Added appointment to records: {formatted_record}")
                 else:
                     print(f"Skipping past appointment: {formatted_date}")
-                
+
             except Exception as e:
                 print(f"Error processing appointment: {str(e)}")
                 print(f"Problematic appointment data: {appt}")
@@ -1974,7 +1986,7 @@ def get_all_records():
 
         # Combine all records and sort by date
         all_records = formatted_health_records + formatted_vaccination_records + formatted_appointments
-        
+
         # Sort records by date, handling both timestamp and date fields
         def get_record_date(record):
             date_str = record.get('date') or record.get('timestamp')
@@ -1994,7 +2006,7 @@ def get_all_records():
         all_records.sort(key=get_record_date, reverse=True)
 
         print(f"\nTotal records being returned: {len(all_records)}")
-        
+
         return jsonify({
             'success': True,
             'records': all_records,
@@ -2013,18 +2025,18 @@ def get_all_records():
 def export_records():
     try:
         user_id = str(session['user_id'])
-        
+
         # Create a StringIO object to write CSV data
         output = StringIO()
         writer = csv.writer(output)
-        
+
         # Write header
         writer.writerow(['Date', 'Animal ID', 'Animal Type', 'Record Type', 'Details', 'Status'])
-        
+
         # Get all records using the existing function
         records_response = get_all_records()
         records_data = json.loads(records_response.get_data(as_text=True))
-        
+
         if records_data['success']:
             # Write records to CSV
             for record in records_data['records']:
@@ -2036,7 +2048,7 @@ def export_records():
                     record['details'],
                     record.get('status', '')
                 ])
-            
+
             # Prepare the response
             output.seek(0)
             return Response(
@@ -2052,7 +2064,7 @@ def export_records():
                 'success': False,
                 'error': 'Failed to get records'
             }), 500
-            
+
     except Exception as e:
         print(f"Error in export_records: {str(e)}")
         return jsonify({
@@ -2066,19 +2078,19 @@ def debug_appointments():
     try:
         user_id = str(session['user_id'])
         print(f"Debugging appointments for user: {user_id}")
-        
+
         # Get all appointments
         all_appointments = list(appointments.find({}))
         print("\nAll appointments in database:")
         for appt in all_appointments:
             print(f"Appointment: {appt}")
-            
+
         # Get user's appointments
         user_appointments = list(appointments.find({'user_id': user_id}))
         print(f"\nAppointments for user {user_id}:")
         for appt in user_appointments:
             print(f"User appointment: {appt}")
-            
+
         # Get scheduled appointments
         scheduled_appointments = list(appointments.find({
             'user_id': user_id,
@@ -2087,7 +2099,7 @@ def debug_appointments():
         print(f"\nScheduled appointments for user {user_id}:")
         for appt in scheduled_appointments:
             print(f"Scheduled appointment: {appt}")
-            
+
         return jsonify({
             'all_appointments': all_appointments,
             'user_appointments': user_appointments,
