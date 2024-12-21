@@ -45,8 +45,15 @@ app.secret_key = os.getenv('SECRET_KEY', os.urandom(24))
 # Configure MongoDB with better error handling
 mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
 try:
-    # Add timeout to quickly identify connection issues
-    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    # Add timeout and proper TLS/SSL configuration
+    client = MongoClient(
+        mongo_uri,
+        serverSelectionTimeoutMS=5000,
+        tls=True,
+        tlsAllowInvalidCertificates=False,
+        retryWrites=True,
+        w='majority'
+    )
     # Test connection
     client.admin.command('ping')
     print("Successfully connected to MongoDB")
